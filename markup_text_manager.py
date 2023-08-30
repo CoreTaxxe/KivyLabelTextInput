@@ -1,11 +1,12 @@
 #
+import math
 from copy import copy
 from typing import Callable
 
 if 1 == 1:
     from loguru import logger
 #
-from dataclasses import dataclass, field, asdict, fields
+from dataclasses import dataclass, field, asdict, fields, Field
 from enum import StrEnum
 from functools import lru_cache
 import keyboard
@@ -40,16 +41,21 @@ Builder.load_string("""
 class BBTagPRE(StrEnum):
     REF: str = "[ref={}]"
     BOLD: str = "[b]"
+    ITALIC: str = "[i]"
+    UNDERLINE: str = "[u]"
+    STRIKETHROUGH: str = "[s]"
+    FONT_NAME: str = "[font={}]"
+    FONT_SIZE: str = "[size={}]"
 
 
 class BBTagPOST(StrEnum):
     REF: str = "[/ref]"
     BOLD: str = "[/b]"
-
-
-property_to_bbtag: dict[str, tuple[BBTagPRE, BBTagPOST]] = {
-    "bold": (BBTagPRE.BOLD, BBTagPOST.BOLD)
-}
+    ITALIC: str = "[/i]"
+    UNDERLINE: str = "[/u]"
+    STRIKETHROUGH: str = "[/s]"
+    FONT_NAME: str = "[/font]"
+    FONT_SIZE: str = "[/size]"
 
 
 @lru_cache(64)
@@ -57,15 +63,54 @@ def get_extents(text: str, **kwargs) -> tuple[int, int]:
     return CoreLabel(**kwargs).get_extents(text)
 
 
+def euclidean_distance(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
+
+
+def _get_string_unformatted(string: str) -> str:
+    return string.encode("unicode_escape").decode("utf-8")
+
+
 @dataclass
 class CharSettings(object):
     bold: bool = False
+    italic: bool = False
+    underline: bool = False
+    strikethrough: bool = False
+    font_name: str = None
+    font_size: int = None
 
     def copy(self) -> 'CharSettings':
         return copy(self)
 
     def get_active_tags(self) -> list[tuple[str, str], ...]:
-        return [property_to_bbtag[prop.name] for prop in fields(self) if getattr(self, prop.name, False)]
+
+        def check(dt_field: Field) -> bool:
+            if dt_field.type is bool:
+                return getattr(self, dt_field.name, False)
+
+            elif dt_field.type is str:
+                return isinstance(getattr(self, dt_field.name), str)
+
+            elif dt_field.type is int:
+                return isinstance(getattr(self, dt_field.name), int)
+
+            logger.error(f"Property went unchecked. {dt_field.name, dt_field.type}")
+            return False
+
+        def adjust(property_name: str) -> tuple[str, str]:
+            pre_tag: str = BBTagPRE[property_name]
+            post_tag: str = BBTagPOST[property_name]
+
+            if "{}" in pre_tag:
+                pre_tag = pre_tag.format(getattr(self, property_name.lower()))
+
+            if "{}" in post_tag:
+                post_tag = post_tag.format(getattr(self, property_name.lower()))
+
+            return pre_tag, post_tag
+
+        return [adjust(unchecked_field.name.upper()) for unchecked_field in fields(self) if check(unchecked_field)]
 
     def get_wrapper(self) -> tuple[StringIO, StringIO]:
         pre_string: StringIO = StringIO()
