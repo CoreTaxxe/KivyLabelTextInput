@@ -3,6 +3,8 @@ import math
 from copy import copy
 from typing import Callable
 
+import kivy.input
+
 if 1 == 1:
     from loguru import logger
 #
@@ -194,6 +196,12 @@ class _MarkupTextManager(object):
         """
         self.update()
 
+    def get_unformatted_markup(self) -> str:
+        return _get_string_unformatted(self._markup_text)
+
+    def get_unformatted_text(self) -> str:
+        return _get_string_unformatted(self._text)
+
     def _get_x(self, character: Character) -> float:
         return self._label.center_x - 0.5 * self._label.texture_size[0] + character.x
 
@@ -351,6 +359,16 @@ class _MarkupTextManager(object):
         else:
             character = self._characters[current_line[self._cursor[0]]]
             return self._get_x(character), self._get_adjusted_y(character)
+
+    def set_cursor_by_touch(self, touch: kivy.input.MotionEvent) -> None:
+        """
+        set cursor by touch position
+        :param touch: touch
+        :return: None
+        """
+
+    def _get_closes_index_to_pos(self, x: float, y: float) -> int:
+        pass
 
     def move_cursor_right(self) -> None:
         """
