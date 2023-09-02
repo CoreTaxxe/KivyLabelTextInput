@@ -3,8 +3,6 @@ import math
 from copy import copy
 from typing import Callable
 
-import kivy.input
-
 if 1 == 1:
     from loguru import logger
 #
@@ -15,6 +13,7 @@ import keyboard
 from io import StringIO
 
 from kivy.lang import Builder
+import kivy.input
 from kivy.app import App
 from kivy.core.text import Label as CoreLabel
 from kivy.core.window import Window
@@ -187,6 +186,11 @@ class _MarkupTextManager(object):
         self._cursor: list[int, int] = [0, 0]
         self._global_settings: CharSettings = CharSettings()
 
+        # multi select controls
+        self._msc_initial_index: int = 0
+        self._msc_end_index: int = 0
+        self._msc_boxes: list[list[int, int, int, int]] = []
+
     def _on_label_property_changed_wrapper(self, *_args, **_kwargs) -> None:
         """
         Wrapper to simplify event binging
@@ -232,6 +236,24 @@ class _MarkupTextManager(object):
 
     def _get_line_of_index(self, index: int) -> list[int]:
         return next((line for line in self._lines if index in line), [])
+
+    def _get_index_by_cursor(self) -> int:
+        """
+        return index cursor is pointing at
+        :return: index
+        """
+        if self._cursor[1] >= len(self._lines):
+            logger.warning("Cannot get index: Row out of range.")
+            return -1
+
+        line: list[int] = self._lines[0]
+
+        x: int = self._cursor[0]
+        if x >= len(line):
+            logger.warning("Cannot get index: Column out of range.")
+            return -1
+
+        return line[x]
 
     def _on_label_ref_updated(self, _widget: Label, refs: dict[str, list[tuple[int, int, int, float], ...]]) -> None:
         """
@@ -366,9 +388,54 @@ class _MarkupTextManager(object):
         :param touch: touch
         :return: None
         """
+        x = self._get_closest_index_to_pos(touch.x, touch.y)
+        print(x, self._characters[x])
+        self._set_cursor_by_index(self._get_closest_index_to_pos(touch.x, touch.y))
 
-    def _get_closes_index_to_pos(self, x: float, y: float) -> int:
-        pass
+    def _set_cursor_by_index(self, index: int) -> None:
+        """
+        set cursor row and column by index
+        :param index: int index
+        :return: None
+        """
+        self._cursor[0], self._cursor[1] = self._get_cursor_by_index(index)
+        self.update()
+
+    def _get_cursor_by_index(self, index: int) -> tuple[int, int]:
+        """
+        find row , column by given index
+        :param index: int index
+        :return: tuple of row column
+        """
+
+        line: list[int]
+        for line_index, line in enumerate(self._lines):
+            if index in line:
+                return line.index(index), line_index
+        return 0, 0
+
+    def _get_closest_index_to_pos(self, x: float, y: float) -> int:
+        """
+        get the closest index to x, y position
+        :param x: x pos
+        :param y: y pos
+        :return: index, returns -1 if no index was found
+        """
+        if len(self._characters) == 0:
+            return -1
+
+        x, y = self._label.to_local(x, y)
+        closest_index: int = 0
+        min_distance: float = math.inf
+        target_point: tuple[float, float] = (x, y)
+        character: Character
+        for character in self._characters:
+            other_point: tuple[float, float] = (self._get_x(character), self._get_y(character) - character.height / 2.0)
+            ecd: float = euclidean_distance(target_point, other_point)
+            if ecd < min_distance:
+                min_distance = ecd
+                closest_index = character.index
+        return closest_index
 
     def move_cursor_right(self) -> None:
         """
@@ -422,6 +489,51 @@ class _MarkupTextManager(object):
 
         self.update()
 
+    def start_select_by_drag(self, touch: kivy.input.MotionEvent) -> None:
+        """
+        start selection by drag
+        :param touch: touch event
+        :return: None
+        """
+        self._msc_initial_index = self._get_closest_index_to_pos(touch.x, touch.y)
+        self._msc_end_index = self._msc_initial_index
+
+    def update_select_by_drag(self, touch: kivy.input.MotionEvent) -> None:
+        """
+        update multi select drag
+        :param touch: touch event
+        :return: None
+        """
+        self._msc_end_index = self._get_closest_index_to_pos(touch.x, touch.y)
+        self._rebuild_selection_boxes()
+
+    def stop_select_by_drag(self, touch: kivy.input.MotionEvent) -> None:
+        if self._msc_initial_index == self._msc_end_index:
+            self.set_cursor_by_touch(touch)
+        else:
+            self._rebuild_selection_boxes()
+
+    def _rebuild_selection_boxes(self) -> None:
+        """
+        rebuild selection boxes.
+        Boxes are per-line rectangles in x,y,w,h format
+        :return: None
+        """
+        self._msc_boxes.clear()
+
+        if self._msc_initial_index == self._msc_end_index:
+            return
+
+        self._set_cursor_by_index(self._msc_end_index)
+
+        start_index: int = min(self._msc_initial_index, self._msc_end_index)
+        end_index: int = max(self._msc_initial_index, self._msc_end_index)
+
+        # fill indices
+        indices: list[int] = list(range(start_index, end_index + 1))
+
+
+
 
 class TextEdit(RelativeLayout):
     cursor_x = NumericProperty(0)
@@ -431,7 +543,7 @@ class TextEdit(RelativeLayout):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        lbl = Label(text="Hello Wolrd 12345678", color=(0, 0, 0))
+        lbl = Label(text="Hello World 12345678", color=(0, 0, 0))
         lbl.text_size = (50, None)
         self.add_widget(lbl)
         self._manager: _MarkupTextManager = _MarkupTextManager(lbl, self._cb)
@@ -446,6 +558,24 @@ class TextEdit(RelativeLayout):
         self.cursor_x = pos[0]
         self.cursor_y = pos[1]
         self.cursor_height = size[1]
+
+    def on_touch_down(self, touch):
+        touch.push()
+        touch.apply_transform_2d(self.to_local)
+        self._manager.start_select_by_drag(touch)
+        touch.pop()
+
+    def on_touch_move(self, touch):
+        touch.push()
+        touch.apply_transform_2d(self.to_local)
+        self._manager.update_select_by_drag(touch)
+        touch.pop()
+
+    def on_touch_up(self, touch: kivy.input.MotionEvent):
+        touch.push()
+        touch.apply_transform_2d(self.to_local)
+        self._manager.stop_select_by_drag(touch)
+        touch.pop()
 
 
 if __name__ == "__main__":
