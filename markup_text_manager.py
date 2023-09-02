@@ -1,7 +1,7 @@
 #
 import math
 from copy import copy
-from typing import Callable
+from typing import Callable, Union
 
 if 1 == 1:
     from loguru import logger
@@ -20,7 +20,9 @@ from kivy.core.window import Window
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.label import Label
 from kivy.uix.relativelayout import RelativeLayout
+from kivy.clock import mainthread, Clock
 from kivy.properties import NumericProperty
+from kivy.graphics import Rectangle, Color
 
 Builder.load_string("""
 <TextEdit>:
@@ -37,6 +39,8 @@ Builder.load_string("""
             size : 2, self.cursor_height
         
 """)
+
+LB_NEWLINE: str = "\n"
 
 
 class BBTagPRE(StrEnum):
@@ -189,7 +193,9 @@ class _MarkupTextManager(object):
         # multi select controls
         self._msc_initial_index: int = 0
         self._msc_end_index: int = 0
-        self._msc_boxes: list[list[int, int, int, int]] = []
+        self._msc_boxes: list[list[float, float, float, float]] = []
+        # line break control
+        self._lbc_last_indices: list[int] = []
 
     def _on_label_property_changed_wrapper(self, *_args, **_kwargs) -> None:
         """
@@ -221,17 +227,25 @@ class _MarkupTextManager(object):
         :return: None
         """
         self._lines.clear()
+        self._lbc_last_indices.clear()
+
+        current_line: list[int] = []
 
         # find all different y values to determine line count
         last_y: int = -1
-        current_line: list[int] = []
         character: Character
+        last_character: Union[Character, None] = None
+        new_line_index: int = -1
         for character in self._characters:
             if character.y > last_y:
                 current_line = []
                 self._lines.append(current_line)
                 last_y = character.y
+                if last_character is not None and last_character.text != LB_NEWLINE:
+                    self._lbc_last_indices.append(new_line_index)
+                    new_line_index -= 1
             current_line.append(character.index)
+            last_character = character
         logger.debug(f"Lines ({len(self._lines)}): {self._lines}")
 
     def _get_line_of_index(self, index: int) -> list[int]:
@@ -333,7 +347,8 @@ class _MarkupTextManager(object):
     def update(self) -> None:
         self._refresh_callback(
             self.get_cursor_pos(),
-            self.get_cursor_size()
+            self.get_cursor_size(),
+            self._msc_boxes
         )
 
     def set_text(self, text: str) -> None:
@@ -388,9 +403,8 @@ class _MarkupTextManager(object):
         :param touch: touch
         :return: None
         """
-        x = self._get_closest_index_to_pos(touch.x, touch.y)
-        print(x, self._characters[x])
         self._set_cursor_by_index(self._get_closest_index_to_pos(touch.x, touch.y))
+        self.update()
 
     def _set_cursor_by_index(self, index: int) -> None:
         """
@@ -399,7 +413,6 @@ class _MarkupTextManager(object):
         :return: None
         """
         self._cursor[0], self._cursor[1] = self._get_cursor_by_index(index)
-        self.update()
 
     def _get_cursor_by_index(self, index: int) -> tuple[int, int]:
         """
@@ -407,6 +420,11 @@ class _MarkupTextManager(object):
         :param index: int index
         :return: tuple of row column
         """
+
+        # index is new line
+        if index < 0:
+            line_index: int = (index + 1) * -1
+            return len(self._lines[line_index]), line_index
 
         line: list[int]
         for line_index, line in enumerate(self._lines):
@@ -435,6 +453,12 @@ class _MarkupTextManager(object):
             if ecd < min_distance:
                 min_distance = ecd
                 closest_index = character.index
+
+        line: list[int] = self._get_line_of_index(closest_index)
+        if closest_index == line[-1]:
+            closest_character: Character = self._characters[closest_index]
+            if min_distance > closest_character.height / 2.0:
+                closest_index = (self._lines.index(line) + 1) * -1
         return closest_index
 
     def move_cursor_right(self) -> None:
@@ -509,6 +533,7 @@ class _MarkupTextManager(object):
 
     def stop_select_by_drag(self, touch: kivy.input.MotionEvent) -> None:
         if self._msc_initial_index == self._msc_end_index:
+            self._msc_boxes.clear()
             self.set_cursor_by_touch(touch)
         else:
             self._rebuild_selection_boxes()
@@ -521,18 +546,95 @@ class _MarkupTextManager(object):
         """
         self._msc_boxes.clear()
 
-        if self._msc_initial_index == self._msc_end_index:
-            return
-
         self._set_cursor_by_index(self._msc_end_index)
 
-        start_index: int = min(self._msc_initial_index, self._msc_end_index)
-        end_index: int = max(self._msc_initial_index, self._msc_end_index)
+        if self._msc_initial_index == self._msc_end_index:
+            return self.update()
+
+        start_index: int = self._msc_initial_index
+        end_index: int = self._msc_end_index
+
+        e_end_index: int = min(start_index, end_index)
+
+        if start_index < 0:
+            start_index = self._lines[(start_index + 1) * -1][-1]
+
+        if end_index < 0:
+            end_index = self._lines[(end_index + 1) * -1][-1]
+
+        start_index, end_index = sorted([start_index, end_index])
 
         # fill indices
         indices: list[int] = list(range(start_index, end_index + 1))
 
+        print()
+        print("auto NL: ", self._lbc_last_indices)
+        print(indices)
+        print([self._characters[c].text for c in indices])
 
+        # split indices into lines
+        lines: list[list[int]] = [[] for _ in self._lines]
+        for index in indices:
+            for line_index, line in enumerate(self._lines):
+                if index in line:
+                    lines[line_index].append(index)
+                    break
+
+        # find indices for row spanning e indices
+        e_indices: set[int] = set()
+        prev_line: Union[list[int], None] = None
+        for line_index, line in enumerate(lines):
+            if not line:
+                continue
+
+            if prev_line is not None:
+                e_indices.add(line_index * -1)
+
+            elif e_end_index < 0:
+                e_indices.add((line_index + 1) * -1)
+
+            prev_line = line
+
+        # convert to list and sort
+        e_indices: list[int] = sorted(list(e_indices))
+        print("EE", e_indices)
+
+        # find max height of each line
+        line_height_map: list[int] = []
+
+        for line in lines:
+            max_height: int = 0
+            for char_index in line:
+                character: Character = self._characters[char_index]
+                max_height = max(character.height, max_height)
+
+            line_height_map.append(max_height)
+
+        for line_index, line in enumerate(lines):
+            if not line:
+                continue
+
+            rectangle: list[float, float, float, float] = [0.0, 0.0, 0.0, 0.0]
+            first_char: Character = self._characters[line[0]]
+            last_char: Character = self._characters[line[-1]]
+            rectangle[0] = self._get_x(first_char)
+            rectangle[1] = self._get_y(last_char) - line_height_map[line_index]
+            rectangle[2] = self._get_x(last_char) - rectangle[0]
+            rectangle[3] = line_height_map[line_index]
+
+            print(line, self._lines[line_index])
+
+            e_index: int = (line_index + 1) * -1
+
+            print("EI, ", e_index)
+
+            if e_index in e_indices:
+                print("Extend ", e_indices)
+                rectangle[2] += last_char.width
+
+            self._msc_boxes.append(rectangle)
+
+        self.update()
 
 
 class TextEdit(RelativeLayout):
@@ -543,8 +645,9 @@ class TextEdit(RelativeLayout):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        lbl = Label(text="Hello World 12345678", color=(0, 0, 0))
+        lbl = Label(text="Hello World\n12345678", color=(0, 0, 0))
         lbl.text_size = (50, None)
+        self._gfx_selection = []
         self.add_widget(lbl)
         self._manager: _MarkupTextManager = _MarkupTextManager(lbl, self._cb)
         self._manager.set_text(lbl.text)
@@ -554,10 +657,22 @@ class TextEdit(RelativeLayout):
         keyboard.add_hotkey("up arrow", lambda *args: self._manager.move_cursor_up())
         keyboard.add_hotkey("down arrow", lambda *args: self._manager.move_cursor_down())
 
-    def _cb(self, pos, size):
+    @mainthread
+    def _cb(self, pos, size, boxes):
         self.cursor_x = pos[0]
         self.cursor_y = pos[1]
         self.cursor_height = size[1]
+
+        for instruction in self._gfx_selection:
+            self.canvas.remove(instruction)
+        self._gfx_selection.clear()
+
+        for box in boxes:
+            with self.canvas:
+                c = Color(1, 1, 0, 0.5)
+                r = Rectangle(pos=(box[0], box[1]), size=(box[2], box[3]))
+                self._gfx_selection.append(c)
+                self._gfx_selection.append(r)
 
     def on_touch_down(self, touch):
         touch.push()
