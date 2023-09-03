@@ -1,28 +1,24 @@
-#
 import math
 from copy import copy
-from typing import Callable, Union
-
-if 1 == 1:
-    from loguru import logger
-#
 from dataclasses import dataclass, field, asdict, fields, Field
 from enum import StrEnum
 from functools import lru_cache
-import keyboard
 from io import StringIO
+from typing import Callable
 
-from kivy.lang import Builder
+import keyboard
 import kivy.input
 from kivy.app import App
+from kivy.clock import mainthread
 from kivy.core.text import Label as CoreLabel
 from kivy.core.window import Window
+from kivy.graphics import Rectangle, Color
+from kivy.lang import Builder
+from kivy.properties import NumericProperty
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.label import Label
 from kivy.uix.relativelayout import RelativeLayout
-from kivy.clock import mainthread, Clock
-from kivy.properties import NumericProperty
-from kivy.graphics import Rectangle, Color
+from loguru import logger
 
 Builder.load_string("""
 <TextEdit>:
@@ -604,36 +600,35 @@ class _MarkupTextManager(object):
         start_index: int = self._cursor_to_index(start_cursor)
         end_index: int = self._cursor_to_index(end_cursor)
 
+        # get e index
+        e_start_index: int = start_index if start_index >= 0 else self._lines[start_cursor.y][-1]
+        e_end_index: int = end_index if end_index >= 0 else self._lines[end_cursor.y][-1]
+
         print()
         print('#' * 20)
         print("Lines: ", self._lines)
         print("LineBreak Indices: ", self._lbc_indices)
-        print("Start Cursor: ", start_cursor, "Start index: ", start_index)
-        print("End Cursor: ", end_cursor, "End index: ", end_index)
-        return
-        print("TextBox: ", [self._characters[c].text for c in indices])
+        print("Start Cursor: ", start_cursor, " | Start index: ", start_index, " | E Start index: ", e_start_index)
+        print("End Cursor: ", end_cursor, " | End index: ", end_index, " | E End index: ", e_end_index)
+
+        span_indices: list[int] = list(
+            range(e_start_index + (1 if start_index < 0 else 0), e_end_index + (1 if end_index < 0 else 0))
+        )
+
+        print("Indices (Span): ", span_indices)
 
         # split indices into lines
         lines: list[list[int]] = [[] for _ in self._lines]
-        for index in indices:
+        for index in span_indices:
             for line_index, line in enumerate(self._lines):
                 if index in line:
                     lines[line_index].append(index)
                     break
 
-
-        # find indices for row spanning e indices
-        span_indices: list[int] = []
-        previous_line: list[int] = []
-        for line_index, line in enumerate(lines):
-            if previous_line and line:
-                span_indices.append(line_index)
-            previous_line = line
-
-        print("LBC indices spanned: ", span_indices)
+        print("Lines (Span): ", lines)
 
         # find max height of each line
-        line_height_map: list[int] = []
+        line_heights: list[int] = []
 
         for line in lines:
             max_height: int = 0
@@ -641,8 +636,11 @@ class _MarkupTextManager(object):
                 character: Character = self._characters[char_index]
                 max_height = max(character.height, max_height)
 
-            line_height_map.append(max_height)
+            line_heights.append(max_height)
 
+        print("Line heights: ", line_heights)
+
+        # calculate boxes
         for line_index, line in enumerate(lines):
             if not line:
                 continue
@@ -651,16 +649,27 @@ class _MarkupTextManager(object):
             first_char: Character = self._characters[line[0]]
             last_char: Character = self._characters[line[-1]]
             rectangle[0] = self._get_x(first_char)
-            rectangle[1] = self._get_y(last_char) - line_height_map[line_index]
-            rectangle[2] = self._get_x(last_char) - rectangle[0]
-            rectangle[3] = line_height_map[line_index]
-
-            # if line[-1] == self._lines[line_index][-1]:
-            #    rectangle[2] += last_char.width
+            rectangle[1] = self._get_y(last_char) - line_heights[line_index]
+            rectangle[2] = self._get_x(last_char) - rectangle[0] + last_char.width
+            rectangle[3] = line_heights[line_index]
 
             self._msc_boxes.append(rectangle)
 
         self.update()
+        # print("TextBox: ", [self._characters[c].text for c in indices])
+
+        # find indices for row spanning e indices
+        # span_indices: list[int] = []
+        # previous_line: list[int] = []
+        # for line_index, line in enumerate(lines):
+        #    if previous_line and line:
+        #        span_indices.append(line_index)
+        #    previous_line = line
+
+        # print("LBC indices spanned: ", span_indices)
+
+        # if line[-1] == self._lines[line_index][-1]:
+        #    rectangle[2] += last_char.width
 
 
 class TextEdit(RelativeLayout):
