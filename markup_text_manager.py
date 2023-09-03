@@ -621,6 +621,7 @@ class _MarkupTextManager(object):
                     lines[line_index].append(index)
                     break
 
+
         # find indices for row spanning e indices
         span_indices: list[int] = []
         previous_line: list[int] = []
