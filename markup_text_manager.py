@@ -174,22 +174,43 @@ class Character(object):
 
         return build_string.getvalue()
 
+    def is_newline(self) -> bool:
+        return self.text == LB_NEWLINE
+
 
 @dataclass
-class Line(object):
-    index: int
-    characters: list[Character]
-    indices: list[int] = field(default_factory=lambda: [])
-    has_auto_line_break: bool = False
+class Cursor(object):
+    x: int = 0
+    y: int = 0
 
-    def __post_init__(self) -> None:
-        char: Character
-        for char in self.characters:
-            self.indices.append(char.index)
+    def __iter__(self):
+        return iter((self.x, self.y))
 
-    def add_character(self, char: Character) -> None:
-        self.characters.append(char)
-        self.indices.append(char.index)
+    def set(self, cursor: 'Cursor') -> None:
+        self.x = cursor.x
+        self.y = cursor.y
+
+    def __lt__(self, other: 'Cursor') -> bool:
+        if self.y < other.y:
+            return True
+        return self.x < other.x if self.y == other.y else False
+
+    def __le__(self, other: 'Cursor') -> bool:
+        if self.y < other.y:
+            return True
+
+        return self.x <= other.x if self.y == other.y else False
+
+    def __gt__(self, other: 'Cursor') -> bool:
+        if self.y > other.y:
+            return True
+        return self.x > other.x if self.y == other.y else False
+
+    def __ge__(self, other: 'Cursor') -> bool:
+        if self.y > other.y:
+            return True
+
+        return self.x >= other.x if self.y == other.y else False
 
 
 class _MarkupTextManager(object):
@@ -204,12 +225,12 @@ class _MarkupTextManager(object):
         self._markup_text: str = ""
         self._characters: list[Character] = []
         self._lines: list[list[int]] = []
-        self._cursor: list[int, int] = [0, 0]
+        self._cursor: Cursor = Cursor()
         self._global_settings: CharSettings = CharSettings()
 
         # multi select controls
-        self._msc_initial_index: int = 0
-        self._msc_end_index: int = 0
+        self._msc_initial_cursor: Cursor = Cursor()
+        self._msc_end_cursor: Cursor = Cursor()
         self._msc_boxes: list[list[float, float, float, float]] = []
         # auto line break control
         self._lbc_indices: list[int] = []
@@ -251,15 +272,20 @@ class _MarkupTextManager(object):
         # find all different y values to determine line count
         last_y: int = -1
         character: Character
-        last_character: Union[Character, None] = None
+        was_lb: bool = False
         for character in self._characters:
+
             if character.y > last_y:
                 current_line = []
                 self._lines.append(current_line)
                 last_y = character.y
 
+                if was_lb:
+                    self._lbc_indices.append(self._lines.index(current_line))
 
             current_line.append(character.index)
+            was_lb = character.is_newline()
+
         logger.debug(f"Lines ({len(self._lines)}): {self._lines}")
 
     def _get_line_of_index(self, index: int) -> list[int]:
@@ -270,13 +296,13 @@ class _MarkupTextManager(object):
         return index cursor is pointing at
         :return: index
         """
-        if self._cursor[1] >= len(self._lines):
+        if self._cursor.y >= len(self._lines):
             logger.warning("Cannot get index: Row out of range.")
             return -1
 
         line: list[int] = self._lines[0]
 
-        x: int = self._cursor[0]
+        x: int = self._cursor.x
         if x >= len(line):
             logger.warning("Cannot get index: Column out of range.")
             return -1
@@ -380,12 +406,12 @@ class _MarkupTextManager(object):
         :return: width, height
         """
         character: Character
-        current_line: list[int] = self._lines[self._cursor[1]]
+        current_line: list[int] = self._lines[self._cursor.y]
 
-        if self._cursor[0] >= len(current_line):
+        if self._cursor.x >= len(current_line):
             character = self._characters[current_line[-1]]
-        elif self._cursor[0] > 0:
-            character = self._characters[current_line[self._cursor[0] - 1]]
+        elif self._cursor.x > 0:
+            character = self._characters[current_line[self._cursor.x - 1]]
         else:
             character = self._characters[current_line[0]]
 
@@ -396,19 +422,19 @@ class _MarkupTextManager(object):
         get cursor position by the current row and column
         :return: x,y position
         """
-        if self._cursor[1] >= len(self._lines):
-            logger.warning(f"Cursor y position out of bounds: {self._cursor[1]}")
+        if self._cursor.y >= len(self._lines):
+            logger.warning(f"Cursor y position out of bounds: {self._cursor.y}")
             return 0, 0
 
         character: Character
-        current_line: list[int] = self._lines[self._cursor[1]]
+        current_line: list[int] = self._lines[self._cursor.y]
 
         # if cursor x is bigger than the size of the line get the most right element pos
-        if self._cursor[0] >= len(current_line):
+        if self._cursor.x >= len(current_line):
             character = self._characters[current_line[-1]]
             return self._get_x(character) + character.width, self._get_adjusted_y(character)
         else:
-            character = self._characters[current_line[self._cursor[0]]]
+            character = self._characters[current_line[self._cursor.x]]
             return self._get_x(character), self._get_adjusted_y(character)
 
     def set_cursor_by_touch(self, touch: kivy.input.MotionEvent) -> None:
@@ -417,44 +443,39 @@ class _MarkupTextManager(object):
         :param touch: touch
         :return: None
         """
-        self._set_cursor_by_index(self._get_closest_index_to_pos(touch.x, touch.y))
+        self._set_cursor(*self._get_closest_cursor_to_pos(touch.x, touch.y))
         self.update()
 
-    def _set_cursor_by_index(self, index: int) -> None:
+    def _set_cursor(self, x: int, y: int) -> None:
         """
         set cursor row and column by index
-        :param index: int index
+        :param x: column
+        :param y: row
         :return: None
         """
-        self._cursor[0], self._cursor[1] = self._get_cursor_by_index(index)
+        self._cursor.x, self._cursor.y = x, y
 
-    def _get_cursor_by_index(self, index: int) -> tuple[int, int]:
+    def _get_cursor_by_index(self, index: int) -> Cursor:
         """
         find row , column by given index
         :param index: int index
         :return: tuple of row column
         """
-
-        # index is new line
-        if index < 0:
-            line_index: int = (index + 1) * -1
-            return len(self._lines[line_index]), line_index
-
         line: list[int]
         for line_index, line in enumerate(self._lines):
             if index in line:
-                return line.index(index), line_index
-        return 0, 0
+                return Cursor(line.index(index), line_index)
+        return Cursor(-1, -1)
 
-    def _get_closest_index_to_pos(self, x: float, y: float) -> int:
+    def _get_closest_cursor_to_pos(self, x: float, y: float) -> Cursor:
         """
         get the closest index to x, y position
         :param x: x pos
         :param y: y pos
-        :return: index, returns -1 if no index was found
+        :return: row, col
         """
         if len(self._characters) == 0:
-            return -1
+            return Cursor(-1, -1)
 
         x, y = self._label.to_local(x, y)
         closest_index: int = 0
@@ -469,25 +490,27 @@ class _MarkupTextManager(object):
                 closest_index = character.index
 
         line: list[int] = self._get_line_of_index(closest_index)
+        line_index: int = self._lines.index(line)
+        character_line_index: int = line.index(closest_index)
         if closest_index == line[-1]:
             closest_character: Character = self._characters[closest_index]
             if min_distance > closest_character.height / 2.0:
-                closest_index = (self._lines.index(line) + 1) * -1
-        return closest_index
+                character_line_index += 1
+        return Cursor(character_line_index, line_index)
 
     def move_cursor_right(self) -> None:
         """
         move cursor right
         :return: None
         """
-        current_line: list[int] = self._lines[self._cursor[1]]
+        current_line: list[int] = self._lines[self._cursor.y]
 
-        if self._cursor[0] + 1 > len(current_line):
-            if self._cursor[1] + 1 < len(self._lines):
-                self._cursor[0] = 0
-                self._cursor[1] += 1
+        if self._cursor.x + 1 > len(current_line):
+            if self._cursor.y + 1 < len(self._lines):
+                self._cursor.x = 0
+                self._cursor.y += 1
         else:
-            self._cursor[0] += 1
+            self._cursor.x += 1
 
         self.update()
 
@@ -496,12 +519,12 @@ class _MarkupTextManager(object):
         move cursor left
         :return: None
         """
-        if self._cursor[0] < 1:
-            if self._cursor[1] >= 1:
-                self._cursor[1] -= 1
-                self._cursor[0] = len(self._lines[self._cursor[1]])
+        if self._cursor.x < 1:
+            if self._cursor.y >= 1:
+                self._cursor.y -= 1
+                self._cursor.x = len(self._lines[self._cursor.y])
         else:
-            self._cursor[0] -= 1
+            self._cursor.x -= 1
 
         self.update()
 
@@ -510,9 +533,9 @@ class _MarkupTextManager(object):
         move cursor up
         :return: None
         """
-        self._cursor[1] = max(self._cursor[1] - 1, 0)
-        current_line: list[int] = self._lines[self._cursor[1]]
-        self._cursor[0] = min(self._cursor[0], len(current_line))
+        self._cursor.y = max(self._cursor.y - 1, 0)
+        current_line: list[int] = self._lines[self._cursor.y]
+        self._cursor.x = min(self._cursor.x, len(current_line))
 
         self.update()
 
@@ -521,9 +544,9 @@ class _MarkupTextManager(object):
         move cursor down
         :return: None
         """
-        self._cursor[1] = min(self._cursor[1] + 1, len(self._lines) - 1)
-        current_line: list[int] = self._lines[self._cursor[1]]
-        self._cursor[0] = min(self._cursor[0], len(current_line))
+        self._cursor.y = min(self._cursor.y + 1, len(self._lines) - 1)
+        current_line: list[int] = self._lines[self._cursor.y]
+        self._cursor.x = min(self._cursor.x, len(current_line))
 
         self.update()
 
@@ -533,8 +556,8 @@ class _MarkupTextManager(object):
         :param touch: touch event
         :return: None
         """
-        self._msc_initial_index = self._get_closest_index_to_pos(touch.x, touch.y)
-        self._msc_end_index = self._msc_initial_index
+        self._msc_initial_cursor = self._get_closest_cursor_to_pos(touch.x, touch.y)
+        self._msc_end_cursor = self._msc_initial_cursor
 
     def update_select_by_drag(self, touch: kivy.input.MotionEvent) -> None:
         """
@@ -542,15 +565,24 @@ class _MarkupTextManager(object):
         :param touch: touch event
         :return: None
         """
-        self._msc_end_index = self._get_closest_index_to_pos(touch.x, touch.y)
+        self._msc_end_cursor = self._get_closest_cursor_to_pos(touch.x, touch.y)
         self._rebuild_selection_boxes()
 
     def stop_select_by_drag(self, touch: kivy.input.MotionEvent) -> None:
-        if self._msc_initial_index == self._msc_end_index:
+        if self._msc_initial_cursor == self._msc_end_cursor:
             self._msc_boxes.clear()
             self.set_cursor_by_touch(touch)
         else:
             self._rebuild_selection_boxes()
+
+    def _cursor_to_index(self, cursor: Cursor) -> int:
+        """
+        get index at cursor position
+        :param cursor: cursor object
+        :return: index, returns -1 if cursor column (x) is out of bounds
+        """
+        line: list[int] = self._lines[cursor.y]
+        return line[cursor.x] if cursor.x < len(line) else -1
 
     def _rebuild_selection_boxes(self) -> None:
         """
@@ -560,31 +592,26 @@ class _MarkupTextManager(object):
         """
         self._msc_boxes.clear()
 
-        self._set_cursor_by_index(self._msc_end_index)
+        self._set_cursor(*self._msc_end_cursor)
 
-        if self._msc_initial_index == self._msc_end_index:
+        if self._msc_initial_cursor == self._msc_end_cursor:
             return self.update()
 
-        start_index: int = self._msc_initial_index
-        end_index: int = self._msc_end_index
-
-        e_end_index: int = min(start_index, end_index)
-
-        if start_index < 0:
-            start_index = self._lines[(start_index + 1) * -1][-1]
-
-        if end_index < 0:
-            end_index = self._lines[(end_index + 1) * -1][-1]
-
-        start_index, end_index = sorted([start_index, end_index])
+        start_cursor: Cursor = min(self._msc_initial_cursor, self._msc_end_cursor)
+        end_cursor: Cursor = max(self._msc_initial_cursor, self._msc_end_cursor)
 
         # fill indices
-        indices: list[int] = list(range(start_index, end_index + 1))
+        start_index: int = self._cursor_to_index(start_cursor)
+        end_index: int = self._cursor_to_index(end_cursor)
 
         print()
-        print("auto NL: ", self._lbc_last_indices)
-        print(indices)
-        print([self._characters[c].text for c in indices])
+        print('#' * 20)
+        print("Lines: ", self._lines)
+        print("LineBreak Indices: ", self._lbc_indices)
+        print("Start Cursor: ", start_cursor, "Start index: ", start_index)
+        print("End Cursor: ", end_cursor, "End index: ", end_index)
+        return
+        print("TextBox: ", [self._characters[c].text for c in indices])
 
         # split indices into lines
         lines: list[list[int]] = [[] for _ in self._lines]
@@ -595,23 +622,14 @@ class _MarkupTextManager(object):
                     break
 
         # find indices for row spanning e indices
-        e_indices: set[int] = set()
-        prev_line: Union[list[int], None] = None
+        span_indices: list[int] = []
+        previous_line: list[int] = []
         for line_index, line in enumerate(lines):
-            if not line:
-                continue
+            if previous_line and line:
+                span_indices.append(line_index)
+            previous_line = line
 
-            if prev_line is not None:
-                e_indices.add(line_index * -1)
-
-            elif e_end_index < 0:
-                e_indices.add((line_index + 1) * -1)
-
-            prev_line = line
-
-        # convert to list and sort
-        e_indices: list[int] = sorted(list(e_indices))
-        print("EE", e_indices)
+        print("LBC indices spanned: ", span_indices)
 
         # find max height of each line
         line_height_map: list[int] = []
@@ -636,15 +654,8 @@ class _MarkupTextManager(object):
             rectangle[2] = self._get_x(last_char) - rectangle[0]
             rectangle[3] = line_height_map[line_index]
 
-            print(line, self._lines[line_index])
-
-            e_index: int = (line_index + 1) * -1
-
-            print("EI, ", e_index)
-
-            if e_index in e_indices:
-                print("Extend ", e_indices)
-                rectangle[2] += last_char.width
+            # if line[-1] == self._lines[line_index][-1]:
+            #    rectangle[2] += last_char.width
 
             self._msc_boxes.append(rectangle)
 
