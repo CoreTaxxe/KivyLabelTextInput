@@ -175,6 +175,23 @@ class Character(object):
         return build_string.getvalue()
 
 
+@dataclass
+class Line(object):
+    index: int
+    characters: list[Character]
+    indices: list[int] = field(default_factory=lambda: [])
+    has_auto_line_break: bool = False
+
+    def __post_init__(self) -> None:
+        char: Character
+        for char in self.characters:
+            self.indices.append(char.index)
+
+    def add_character(self, char: Character) -> None:
+        self.characters.append(char)
+        self.indices.append(char.index)
+
+
 class _MarkupTextManager(object):
     def __init__(self, label: Label, refresh_callback: Callable):
         self._label: Label = label
@@ -194,8 +211,8 @@ class _MarkupTextManager(object):
         self._msc_initial_index: int = 0
         self._msc_end_index: int = 0
         self._msc_boxes: list[list[float, float, float, float]] = []
-        # line break control
-        self._lbc_last_indices: list[int] = []
+        # auto line break control
+        self._lbc_indices: list[int] = []
 
     def _on_label_property_changed_wrapper(self, *_args, **_kwargs) -> None:
         """
@@ -227,7 +244,7 @@ class _MarkupTextManager(object):
         :return: None
         """
         self._lines.clear()
-        self._lbc_last_indices.clear()
+        self._lbc_indices.clear()
 
         current_line: list[int] = []
 
@@ -235,17 +252,14 @@ class _MarkupTextManager(object):
         last_y: int = -1
         character: Character
         last_character: Union[Character, None] = None
-        new_line_index: int = -1
         for character in self._characters:
             if character.y > last_y:
                 current_line = []
                 self._lines.append(current_line)
                 last_y = character.y
-                if last_character is not None and last_character.text != LB_NEWLINE:
-                    self._lbc_last_indices.append(new_line_index)
-                    new_line_index -= 1
+
+
             current_line.append(character.index)
-            last_character = character
         logger.debug(f"Lines ({len(self._lines)}): {self._lines}")
 
     def _get_line_of_index(self, index: int) -> list[int]:
