@@ -1,3 +1,9 @@
+"""
+todo:
+cursor breaks if first lines are new lines
+
+"""
+
 xx = 1
 if xx:
     from loguru import logger
@@ -182,6 +188,9 @@ class Cursor(object):
     x: int = 0
     y: int = 0
 
+    def copy(self) -> 'Cursor':
+        return Cursor(self.x, self.y)
+
     def __iter__(self):
         return iter((self.x, self.y))
 
@@ -274,15 +283,28 @@ class _MarkupTextManager(object):
         last_y: int = -1
         character: Character
         for character in self._characters:
-
             if character.y > last_y:
                 current_line = []
                 self._lines.append(current_line)
                 last_y = character.y
-
             current_line.append(character.index)
-
         logger.debug(f"Lines ({len(self._lines)}): {self._lines}")
+
+        if not self._is_cursor_valid():
+            logger.debug("Cursor is invalid. Recalculating.")
+            self._cursor.x = len(self._lines[-1])
+            self._cursor.y = len(self._lines) - 1
+
+    def _is_cursor_valid(self) -> bool:
+        """
+        check if cursor is valid
+        :return: None
+        """
+        if self._cursor.y >= len(self._lines) or self._cursor.y < 0:
+            return False
+
+        line: list[int] = self._lines[self._cursor.y]
+        return len(line) > self._cursor.x > 0
 
     def _get_line_of_index(self, index: int) -> list[int]:
         return next((line for line in self._lines if index in line), [])
@@ -320,6 +342,7 @@ class _MarkupTextManager(object):
         index_list: list[int] = [character.index for character in self._characters]
         str_index: str
         ref_data: list[tuple[int, int, int, float], ...]
+
         for str_index, ref_data in refs.items():
             index: int = int(str_index)
             data: tuple[int, int, int, float] = ref_data[0]
@@ -359,6 +382,7 @@ class _MarkupTextManager(object):
                 missing_character.x = pivot_character.x + pivot_character.width
             else:
                 missing_character.x = pivot_character.x - pivot_character.width
+
             missing_character.y = pivot_character.y
             missing_character.height = pivot_character.height
             missing_character.width = pivot_character.width
@@ -368,7 +392,7 @@ class _MarkupTextManager(object):
 
     def _format(self, text: str, character_settings: list[Character] = None) -> None:
         """
-        Format and process text
+        Format and process text.
         :param text: text to format
         :param character_settings: list of character settings to use. Require to be same size as text.
         :return: None
@@ -449,7 +473,9 @@ class _MarkupTextManager(object):
 
         # find max character height in line to adjust y
         max_height: int = max(self._characters[index].height for index in current_line)
-        pivot_character: Character = self._characters[current_line[max(self._cursor.x - 1, 0)]]
+        pivot_character: Character = self._characters[
+            current_line[min(max(self._cursor.x - 1, 0), len(current_line) - 1)]
+        ]
         character: Character = self._characters[current_line[min(self._cursor.x, len(current_line) - 1)]]
         adjusted: float = 0
 
@@ -599,6 +625,7 @@ class _MarkupTextManager(object):
         """
         self._msc_end_cursor = self._get_closest_cursor_to_pos(touch.x, touch.y)
         self._rebuild_selection_boxes()
+        self._set_cursor(self._msc_end_cursor)
 
     def stop_select_by_drag(self, touch: kivy.input.MotionEvent) -> None:
         """
@@ -608,6 +635,7 @@ class _MarkupTextManager(object):
         """
         if self._is_multiselect():
             self._rebuild_selection_boxes()
+            self._set_cursor(self._msc_end_cursor)
         else:
             self._msc_boxes.clear()
             self.set_cursor_by_touch(touch)
@@ -651,6 +679,66 @@ class _MarkupTextManager(object):
         """
         return [self._characters[index] for index in self._get_selected_indices()]
 
+    def _set_char_setting(self, name: str, value: Any) -> None:
+        """
+        set char setting
+        :param name: name of the setting
+        :param value: value
+        :return: None
+        """
+        for character in self._get_selected_characters():
+            setattr(character.settings, name, value)
+
+        self._rebuild_from_characters()
+
+    def set_bold(self, value: bool) -> None:
+        """
+        set bold value
+        :param value: new bold state
+        :return: None
+        """
+        self._set_char_setting("bold", value)
+
+    def set_italic(self, value: bool) -> None:
+        """
+        set italic value
+        :param value: new italic state
+        :return: None
+        """
+        self._set_char_setting("italic", value)
+
+    def set_underline(self, value: bool) -> None:
+        """
+        set underline value
+        :param value: new underline state
+        :return: None
+        """
+        self._set_char_setting("underline", value)
+
+    def set_strikethrough(self, value: bool) -> None:
+        """
+        set strikethrough value
+        :param value: new strikethrough state
+        :return: None
+        """
+        self._set_char_setting("strikethrough", value)
+
+    def set_font_name(self, value: str) -> None:
+        """
+        set font name value
+        :param value: new font name state
+        :return: None
+        """
+        self._set_char_setting("font_name", value)
+
+    def set_font_size(self, value: int) -> None:
+        """
+        set font size value
+        :param value: new font size state
+        :return: None
+        """
+        self._set_char_setting("font_size", value)
+
     def _rebuild_selection_boxes(self) -> None:
         """
         rebuild selection boxes.
@@ -658,8 +746,6 @@ class _MarkupTextManager(object):
         :return: None
         """
         self._msc_boxes.clear()
-
-        self._set_cursor(self._msc_end_cursor)
 
         if not self._is_multiselect():
             return self.update()
@@ -737,6 +823,16 @@ class _MarkupTextManager(object):
         self._rebuild_from_characters()
         self._reset_selection()
 
+    def _multi_delete(self) -> None:
+        """
+        multi delete
+        :return: None
+        """
+        self.delete_selected()
+        self._rebuild_from_characters()
+        self._rebuild_lines()
+        self._set_cursor(min(self._msc_initial_cursor, self._msc_end_cursor))
+
     def delete(self, left: bool = True) -> None:
         """
         delete char at current position
@@ -744,14 +840,23 @@ class _MarkupTextManager(object):
         :return: None
         """
         if self._is_multiselect():
-            self.delete_selected()
-            self._set_cursor(min(self._msc_initial_cursor, self._msc_end_cursor))
-
+            self._multi_delete()
         else:
-            del self._characters[max(self._cursor_to_index(self._cursor) - (1 if left else 0), 0)]
-            self.move_cursor_left()
+            delete_index: int = self._cursor_to_index(self._cursor)
 
-        self._rebuild_from_characters()
+            if delete_index == -1:
+                delete_index = self._cursor_to_index(Cursor(self._cursor.x - 1, self._cursor.y))
+
+            elif left:
+                delete_index -= 1
+
+            delete_index = max(delete_index, 0)
+
+            del self._characters[delete_index]
+
+            self._rebuild_from_characters()
+            self._rebuild_lines()
+
         self.update_deferred()
 
     def insert(self, text: str, settings: CharSettings = None) -> None:
@@ -761,10 +866,23 @@ class _MarkupTextManager(object):
         :param settings: text settings
         :return: None
         """
-        start_cursor: Cursor = self._cursor
-        start_index: int = max(self._cursor_to_index(start_cursor), 0)
+        # store cursor
+        start_cursor: Cursor = self._cursor.copy()
+        # get index cursor is currently at
+        start_index: int = self._cursor_to_index(start_cursor)
+        # controls if text should be inserted at index or after
+        # if 'insert_at' is True new characters are inserted before the current element at that index
+        # [a, b, c] -> insert at 1 -> [a, x, b, c]
+        # if 'insert_at' is False new characters are inserted after the current element at that index
+        # [a, b, c] -> insert at 1 -> [a, b, x, c]
+        insert_at: bool = True
 
-        # remove selected chars if selected
+        # if cursor is out of bounds get index of next smaller cursor
+        if start_index == -1:
+            start_index = self._cursor_to_index(Cursor(start_cursor.x - 1, start_cursor.y))
+            insert_at = False
+
+        # remove selected chars if multi selected
         is_multiselect: bool = self._is_multiselect()
 
         if is_multiselect:
@@ -776,75 +894,17 @@ class _MarkupTextManager(object):
         char: str
         character: Character
         for index, char in enumerate(text):
-            insert_index: int = index + start_index
+            insert_index: int = index + start_index + (0 if insert_at else 1)
             character = Character(char, insert_index, settings=settings or self._global_settings.copy())
             self._characters.insert(insert_index, character)
+
+        self._rebuild_from_characters()
+        self._rebuild_lines()
 
         for _ in text:
             self.move_cursor_right()
 
-        self._rebuild_from_characters()
         self.update_deferred()
-
-    def _set_char_setting(self, name: str, value: Any) -> None:
-        """
-        set char setting
-        :param name: name of the setting
-        :param value: value
-        :return: None
-        """
-        for character in self._get_selected_characters():
-            setattr(character.settings, name, value)
-
-        self._rebuild_from_characters()
-
-    def set_bold(self, value: bool) -> None:
-        """
-        set bold value
-        :param value: new bold state
-        :return: None
-        """
-        self._set_char_setting("bold", value)
-
-    def set_italic(self, value: bool) -> None:
-        """
-        set italic value
-        :param value: new italic state
-        :return: None
-        """
-        self._set_char_setting("italic", value)
-
-    def set_underline(self, value: bool) -> None:
-        """
-        set underline value
-        :param value: new underline state
-        :return: None
-        """
-        self._set_char_setting("underline", value)
-
-    def set_strikethrough(self, value: bool) -> None:
-        """
-        set strikethrough value
-        :param value: new strikethrough state
-        :return: None
-        """
-        self._set_char_setting("strikethrough", value)
-
-    def set_font_name(self, value: str) -> None:
-        """
-        set font name value
-        :param value: new font name state
-        :return: None
-        """
-        self._set_char_setting("font_name", value)
-
-    def set_font_size(self, value: int) -> None:
-        """
-        set font size value
-        :param value: new font size state
-        :return: None
-        """
-        self._set_char_setting("font_size", value)
 
 
 class TextEdit(RelativeLayout):
@@ -881,7 +941,7 @@ class TextEdit(RelativeLayout):
                 s = " "
 
             if kbe.name == "backspace":
-                self._manager.set_font_size(20)
+                self._manager.delete()
                 return
 
             self._manager.insert(s)
