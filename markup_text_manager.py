@@ -4,12 +4,12 @@ from dataclasses import dataclass, field, asdict, fields, Field
 from enum import StrEnum
 from functools import lru_cache
 from io import StringIO
-from typing import Callable
+from typing import Callable, Union, Any
 
 import keyboard
 import kivy.input
 from kivy.app import App
-from kivy.clock import mainthread
+from kivy.clock import mainthread, Clock
 from kivy.core.text import Label as CoreLabel
 from kivy.core.window import Window
 from kivy.graphics import Rectangle, Color
@@ -228,8 +228,6 @@ class _MarkupTextManager(object):
         self._msc_initial_cursor: Cursor = Cursor()
         self._msc_end_cursor: Cursor = Cursor()
         self._msc_boxes: list[list[float, float, float, float]] = []
-        # auto line break control
-        self._lbc_indices: list[int] = []
 
     def _on_label_property_changed_wrapper(self, *_args, **_kwargs) -> None:
         """
@@ -261,14 +259,12 @@ class _MarkupTextManager(object):
         :return: None
         """
         self._lines.clear()
-        self._lbc_indices.clear()
 
         current_line: list[int] = []
 
         # find all different y values to determine line count
         last_y: int = -1
         character: Character
-        was_lb: bool = False
         for character in self._characters:
 
             if character.y > last_y:
@@ -276,11 +272,7 @@ class _MarkupTextManager(object):
                 self._lines.append(current_line)
                 last_y = character.y
 
-                if was_lb:
-                    self._lbc_indices.append(self._lines.index(current_line))
-
             current_line.append(character.index)
-            was_lb = character.is_newline()
 
         logger.debug(f"Lines ({len(self._lines)}): {self._lines}")
 
@@ -362,9 +354,10 @@ class _MarkupTextManager(object):
         self._rebuild_lines()
         self.update()
 
-    def _format(self) -> None:
+    def _format(self, character_settings: list[Character] = None) -> None:
         """
         Format and process text
+        :param character_settings: list of character settings to use. Require to be same size as text.
         :return: None
         """
         self._characters.clear()
@@ -373,7 +366,11 @@ class _MarkupTextManager(object):
         index: int
         build_string: StringIO = StringIO()
         for index, char in enumerate(self._text):
-            character: Character = Character(char, index, settings=self._global_settings.copy())
+            character: Character = Character(
+                char,
+                index,
+                settings=self._global_settings.copy() if character_settings is None else character_settings[index]
+            )
             build_string.write(character.get_bb_string())
             self._characters.append(character)
         self._markup_text = build_string.getvalue()
@@ -381,11 +378,22 @@ class _MarkupTextManager(object):
         self._label.text = self._markup_text
 
     def update(self) -> None:
+        """
+        call refresh hook
+        :return: None
+        """
         self._refresh_callback(
             self.get_cursor_pos(),
             self.get_cursor_size(),
             self._msc_boxes
         )
+
+    def update_deferred(self, timeout: Union[int, float] = 0) -> None:
+        """
+        call refresh hook after given time
+        :return: None
+        """
+        Clock.schedule_once(lambda _dt: self.update(), timeout)
 
     def set_text(self, text: str) -> None:
         """
@@ -422,16 +430,21 @@ class _MarkupTextManager(object):
             logger.warning(f"Cursor y position out of bounds: {self._cursor.y}")
             return 0, 0
 
-        character: Character
         current_line: list[int] = self._lines[self._cursor.y]
 
-        # if cursor x is bigger than the size of the line get the most right element pos
-        if self._cursor.x >= len(current_line):
-            character = self._characters[current_line[-1]]
-            return self._get_x(character) + character.width, self._get_adjusted_y(character)
-        else:
-            character = self._characters[current_line[self._cursor.x]]
-            return self._get_x(character), self._get_adjusted_y(character)
+        # find max character height in line to adjust y
+        max_height: int = max(self._characters[index].height for index in current_line)
+        pivot_character: Character = self._characters[current_line[max(self._cursor.x - 1, 0)]]
+        character: Character = self._characters[current_line[min(self._cursor.x, len(current_line) - 1)]]
+        adjusted: float = 0
+
+        if max_height > pivot_character.height:
+            adjusted = (max_height - pivot_character.height) / 2.0 + 1
+
+        x: float = self._get_x(character) + (character.width if self._cursor.x >= len(current_line) else 0)
+        y: float = self._get_adjusted_y(pivot_character) - adjusted
+
+        return x, y
 
     def set_cursor_by_touch(self, touch: kivy.input.MotionEvent) -> None:
         """
@@ -439,10 +452,18 @@ class _MarkupTextManager(object):
         :param touch: touch
         :return: None
         """
-        self._set_cursor(*self._get_closest_cursor_to_pos(touch.x, touch.y))
+        self._set_cursor(self._get_closest_cursor_to_pos(touch.x, touch.y))
         self.update()
 
-    def _set_cursor(self, x: int, y: int) -> None:
+    def _set_cursor(self, cursor: Cursor) -> None:
+        """
+        set current cursor by given cursor
+        :param cursor: new cursor
+        :return: None
+        """
+        self._cursor.set(cursor)
+
+    def _set_cursor_pos(self, x: int, y: int) -> None:
         """
         set cursor row and column by index
         :param x: column
@@ -565,11 +586,11 @@ class _MarkupTextManager(object):
         self._rebuild_selection_boxes()
 
     def stop_select_by_drag(self, touch: kivy.input.MotionEvent) -> None:
-        if self._msc_initial_cursor == self._msc_end_cursor:
+        if self._is_multiselect():
+            self._rebuild_selection_boxes()
+        else:
             self._msc_boxes.clear()
             self.set_cursor_by_touch(touch)
-        else:
-            self._rebuild_selection_boxes()
 
     def _cursor_to_index(self, cursor: Cursor) -> int:
         """
@@ -580,19 +601,14 @@ class _MarkupTextManager(object):
         line: list[int] = self._lines[cursor.y]
         return line[cursor.x] if cursor.x < len(line) else -1
 
-    def _rebuild_selection_boxes(self) -> None:
+    def _is_multiselect(self) -> bool:
+        return self._msc_initial_cursor != self._msc_end_cursor
+
+    def _get_selected_indices(self) -> list[int]:
         """
-        rebuild selection boxes.
-        Boxes are per-line rectangles in x,y,w,h format
-        :return: None
+        get selected indices
+        :return: list containing all selected indices
         """
-        self._msc_boxes.clear()
-
-        self._set_cursor(*self._msc_end_cursor)
-
-        if self._msc_initial_cursor == self._msc_end_cursor:
-            return self.update()
-
         start_cursor: Cursor = min(self._msc_initial_cursor, self._msc_end_cursor)
         end_cursor: Cursor = max(self._msc_initial_cursor, self._msc_end_cursor)
 
@@ -604,18 +620,31 @@ class _MarkupTextManager(object):
         e_start_index: int = start_index if start_index >= 0 else self._lines[start_cursor.y][-1]
         e_end_index: int = end_index if end_index >= 0 else self._lines[end_cursor.y][-1]
 
-        print()
-        print('#' * 20)
-        print("Lines: ", self._lines)
-        print("LineBreak Indices: ", self._lbc_indices)
-        print("Start Cursor: ", start_cursor, " | Start index: ", start_index, " | E Start index: ", e_start_index)
-        print("End Cursor: ", end_cursor, " | End index: ", end_index, " | E End index: ", e_end_index)
-
-        span_indices: list[int] = list(
+        return list(
             range(e_start_index + (1 if start_index < 0 else 0), e_end_index + (1 if end_index < 0 else 0))
         )
 
-        print("Indices (Span): ", span_indices)
+    def _get_selected_characters(self) -> list[Character]:
+        """
+        return a list of all selected characters
+        :return: list of characters
+        """
+        return [self._characters[index] for index in self._get_selected_indices()]
+
+    def _rebuild_selection_boxes(self) -> None:
+        """
+        rebuild selection boxes.
+        Boxes are per-line rectangles in x,y,w,h format
+        :return: None
+        """
+        self._msc_boxes.clear()
+
+        self._set_cursor(self._msc_end_cursor)
+
+        if not self._is_multiselect():
+            return self.update()
+
+        span_indices: list[int] = self._get_selected_indices()
 
         # split indices into lines
         lines: list[list[int]] = [[] for _ in self._lines]
@@ -624,8 +653,6 @@ class _MarkupTextManager(object):
                 if index in line:
                     lines[line_index].append(index)
                     break
-
-        print("Lines (Span): ", lines)
 
         # find max height of each line
         line_heights: list[int] = []
@@ -637,8 +664,6 @@ class _MarkupTextManager(object):
                 max_height = max(character.height, max_height)
 
             line_heights.append(max_height)
-
-        print("Line heights: ", line_heights)
 
         # calculate boxes
         for line_index, line in enumerate(lines):
@@ -656,20 +681,150 @@ class _MarkupTextManager(object):
             self._msc_boxes.append(rectangle)
 
         self.update()
-        # print("TextBox: ", [self._characters[c].text for c in indices])
 
-        # find indices for row spanning e indices
-        # span_indices: list[int] = []
-        # previous_line: list[int] = []
-        # for line_index, line in enumerate(lines):
-        #    if previous_line and line:
-        #        span_indices.append(line_index)
-        #    previous_line = line
+    def _rebuild_from_characters(self) -> None:
+        """
+        rebuild from characters
+        :return: None
+        """
+        build_string: StringIO = StringIO()
+        index: int
+        character: Character
+        for index, character in enumerate(self._characters):
+            character.index = index
+            build_string.write(character.get_bb_string())
+        self._markup_text = build_string.getvalue()
+        logger.debug(f"MarkupText: {self._markup_text}")
+        self._label.text = self._markup_text
 
-        # print("LBC indices spanned: ", span_indices)
+    def _reset_selection(self) -> None:
+        """
+        reset selection parameters
+        :return: None
+        """
+        self._msc_end_cursor = self._msc_initial_cursor
+        self._rebuild_selection_boxes()
 
-        # if line[-1] == self._lines[line_index][-1]:
-        #    rectangle[2] += last_char.width
+    def delete_selected(self) -> None:
+        """
+        delete selected text
+        :return: None
+        """
+        selected_indices: list[int] = self._get_selected_indices()
+        for character in self._characters.copy():
+            if character.index in selected_indices:
+                self._characters.remove(character)
+        self._rebuild_from_characters()
+        self._reset_selection()
+
+    def delete(self, left: bool = True) -> None:
+        """
+        delete char at current position
+        :param left: delete on left or right side
+        :return: None
+        """
+        if self._is_multiselect():
+            self.delete_selected()
+            self._set_cursor(min(self._msc_initial_cursor, self._msc_end_cursor))
+
+        else:
+            del self._characters[max(self._cursor_to_index(self._cursor) - (1 if left else 0), 0)]
+            self.move_cursor_left()
+
+        self._rebuild_from_characters()
+        self.update_deferred()
+
+    def insert(self, text: str, settings: CharSettings = None) -> None:
+        """
+        insert text at cursor position
+        :param text: text to insert
+        :param settings: text settings
+        :return: None
+        """
+        start_cursor: Cursor = self._cursor
+        start_index: int = max(self._cursor_to_index(start_cursor), 0)
+
+        # remove selected chars if selected
+        is_multiselect: bool = self._is_multiselect()
+
+        if is_multiselect:
+            start_cursor = min(self._msc_initial_cursor, self._msc_end_cursor)
+            start_index = max(self._cursor_to_index(start_cursor), 0)
+            self.delete_selected()
+            self._set_cursor(start_cursor)
+
+        char: str
+        character: Character
+        for index, char in enumerate(text):
+            insert_index: int = index + start_index
+            character = Character(char, insert_index, settings=settings or self._global_settings.copy())
+            self._characters.insert(insert_index, character)
+
+        for _ in text:
+            self.move_cursor_right()
+
+        self._rebuild_from_characters()
+        self.update_deferred()
+
+    def _set_char_setting(self, name: str, value: Any) -> None:
+        """
+        set char setting
+        :param name: name of the setting
+        :param value: value
+        :return: None
+        """
+        for character in self._get_selected_characters():
+            setattr(character.settings, name, value)
+
+        self._rebuild_from_characters()
+
+    def set_bold(self, value: bool) -> None:
+        """
+        set bold value
+        :param value: new bold state
+        :return: None
+        """
+        self._set_char_setting("bold", value)
+
+    def set_italic(self, value: bool) -> None:
+        """
+        set italic value
+        :param value: new italic state
+        :return: None
+        """
+        self._set_char_setting("italic", value)
+
+    def set_underline(self, value: bool) -> None:
+        """
+        set underline value
+        :param value: new underline state
+        :return: None
+        """
+        self._set_char_setting("underline", value)
+
+    def set_strikethrough(self, value: bool) -> None:
+        """
+        set strikethrough value
+        :param value: new strikethrough state
+        :return: None
+        """
+        self._set_char_setting("strikethrough", value)
+
+    def set_font_name(self, value: str) -> None:
+        """
+        set font name value
+        :param value: new font name state
+        :return: None
+        """
+        self._set_char_setting("font_name", value)
+
+    def set_font_size(self, value: int) -> None:
+        """
+        set font size value
+        :param value: new font size state
+        :return: None
+        """
+        self._set_char_setting("font_size", value)
 
 
 class TextEdit(RelativeLayout):
@@ -681,7 +836,7 @@ class TextEdit(RelativeLayout):
         super().__init__(**kwargs)
 
         lbl = Label(text="Hello World\n12345678", color=(0, 0, 0))
-        lbl.text_size = (50, None)
+        lbl.text_size = (None, None)
         self._gfx_selection = []
         self.add_widget(lbl)
         self._manager: _MarkupTextManager = _MarkupTextManager(lbl, self._cb)
@@ -691,6 +846,27 @@ class TextEdit(RelativeLayout):
         keyboard.add_hotkey("right arrow", lambda *args: self._manager.move_cursor_right())
         keyboard.add_hotkey("up arrow", lambda *args: self._manager.move_cursor_up())
         keyboard.add_hotkey("down arrow", lambda *args: self._manager.move_cursor_down())
+
+        def insert_text(kbe: keyboard.KeyboardEvent):
+            if kbe.name in keyboard.all_modifiers or kbe.name in ["nach-oben", "nach-unten", "nach-rechts",
+                                                                  "nach-links"]:
+                return
+
+            s = kbe.name
+
+            if kbe.name == "enter":
+                s = "\n"
+
+            if kbe.name == "space":
+                s = " "
+
+            if kbe.name == "backspace":
+                self._manager.set_font_size(20)
+                return
+
+            self._manager.insert(s)
+
+        keyboard.on_release(insert_text)
 
     @mainthread
     def _cb(self, pos, size, boxes):
