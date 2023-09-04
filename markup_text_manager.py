@@ -1,3 +1,7 @@
+xx = 1
+if xx:
+    from loguru import logger
+
 import math
 from copy import copy
 from dataclasses import dataclass, field, asdict, fields, Field
@@ -18,7 +22,6 @@ from kivy.properties import NumericProperty
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.label import Label
 from kivy.uix.relativelayout import RelativeLayout
-from loguru import logger
 
 Builder.load_string("""
 <TextEdit>:
@@ -215,9 +218,9 @@ class _MarkupTextManager(object):
         self._label.markup = True
         self._label.bind(refs=self._on_label_ref_updated)
         self._label.bind(texture=self._on_label_property_changed_wrapper)
+        self._label.bind(texture_size=self._on_label_property_changed_wrapper)
         self._label.bind(size=self._on_label_property_changed_wrapper)
         self._refresh_callback: Callable = refresh_callback
-        self._text: str = ""
         self._markup_text: str = ""
         self._characters: list[Character] = []
         self._lines: list[list[int]] = []
@@ -236,13 +239,18 @@ class _MarkupTextManager(object):
         :param _kwargs: kwargs
         :return: None
         """
+        self._rebuild_lines()
+        self._rebuild_selection_boxes()
         self.update()
 
     def get_unformatted_markup(self) -> str:
         return _get_string_unformatted(self._markup_text)
 
+    def _get_text(self) -> str:
+        return "".join(char.text for char in self._characters)
+
     def get_unformatted_text(self) -> str:
-        return _get_string_unformatted(self._text)
+        return _get_string_unformatted(self._get_text())
 
     def _get_x(self, character: Character) -> float:
         return self._label.center_x - 0.5 * self._label.texture_size[0] + character.x
@@ -304,6 +312,10 @@ class _MarkupTextManager(object):
         :param refs: ref dictionary
         :return: None
         """
+        logger.debug("")
+        logger.debug(f"Text: {self.get_unformatted_text()}")
+        logger.debug(f"Markup: {self.get_unformatted_markup()}")
+        logger.debug(f"Updating refs: {refs}")
         # update character positions and size
         index_list: list[int] = [character.index for character in self._characters]
         str_index: str
@@ -354,9 +366,10 @@ class _MarkupTextManager(object):
         self._rebuild_lines()
         self.update()
 
-    def _format(self, character_settings: list[Character] = None) -> None:
+    def _format(self, text: str, character_settings: list[Character] = None) -> None:
         """
         Format and process text
+        :param text: text to format
         :param character_settings: list of character settings to use. Require to be same size as text.
         :return: None
         """
@@ -365,7 +378,7 @@ class _MarkupTextManager(object):
         char: str
         index: int
         build_string: StringIO = StringIO()
-        for index, char in enumerate(self._text):
+        for index, char in enumerate(text):
             character: Character = Character(
                 char,
                 index,
@@ -374,7 +387,7 @@ class _MarkupTextManager(object):
             build_string.write(character.get_bb_string())
             self._characters.append(character)
         self._markup_text = build_string.getvalue()
-        logger.debug(f"MarkupText: {self._markup_text}")
+        logger.debug(f"MarkupText: {self.get_unformatted_markup()}")
         self._label.text = self._markup_text
 
     def update(self) -> None:
@@ -401,8 +414,7 @@ class _MarkupTextManager(object):
         :param text: text to set
         :return: None
         """
-        self._text = text
-        self._format()
+        self._format(text)
 
     def get_cursor_size(self) -> tuple[float, float]:
         """
@@ -431,6 +443,9 @@ class _MarkupTextManager(object):
             return 0, 0
 
         current_line: list[int] = self._lines[self._cursor.y]
+
+        if not current_line:
+            return self._cursor.x, self._cursor.y
 
         # find max character height in line to adjust y
         max_height: int = max(self._characters[index].height for index in current_line)
@@ -586,6 +601,11 @@ class _MarkupTextManager(object):
         self._rebuild_selection_boxes()
 
     def stop_select_by_drag(self, touch: kivy.input.MotionEvent) -> None:
+        """
+        stop multi select drag
+        :param touch: touch event
+        :return: None
+        """
         if self._is_multiselect():
             self._rebuild_selection_boxes()
         else:
@@ -694,7 +714,7 @@ class _MarkupTextManager(object):
             character.index = index
             build_string.write(character.get_bb_string())
         self._markup_text = build_string.getvalue()
-        logger.debug(f"MarkupText: {self._markup_text}")
+        logger.debug(f"MarkupText: {self.get_unformatted_markup()}")
         self._label.text = self._markup_text
 
     def _reset_selection(self) -> None:
@@ -836,7 +856,7 @@ class TextEdit(RelativeLayout):
         super().__init__(**kwargs)
 
         lbl = Label(text="Hello World\n12345678", color=(0, 0, 0))
-        lbl.text_size = (None, None)
+        lbl.text_size = (51, None)
         self._gfx_selection = []
         self.add_widget(lbl)
         self._manager: _MarkupTextManager = _MarkupTextManager(lbl, self._cb)
