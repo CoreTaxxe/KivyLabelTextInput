@@ -1,13 +1,12 @@
-class Test:
-    x = 0
-    y = 1
-
-    def __iter__(self):
-        return iter((self.x, self.y))
+from markup_text_manager import Cursor
 
 
-t = Test()
+c1 = Cursor(1, 0)
 
-x, y = t
 
-print(x, y)
+if True and (c1.x != 0 or c1.y != 0):
+    print("IS TRUE")
+else:
+    print("IS FALSE")
+
+

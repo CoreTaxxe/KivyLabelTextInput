@@ -292,19 +292,52 @@ class _MarkupTextManager(object):
 
         if not self._is_cursor_valid():
             logger.debug("Cursor is invalid. Recalculating.")
-            self._cursor.x = len(self._lines[-1])
-            self._cursor.y = len(self._lines) - 1
+            cursor: Cursor = self._get_next_valid_cursor()
+            logger.debug(f"{self._cursor} -> {cursor}")
+            self._set_cursor(cursor)
 
-    def _is_cursor_valid(self) -> bool:
+    def _get_next_valid_cursor(self) -> Cursor:
+        """
+        get next valid cursor
+        :return: Cursor object
+        """
+        cursor: Cursor = self._cursor.copy()
+
+        # if row is invalid get next closest row
+        if self._cursor.y >= len(self._lines):
+            cursor.y = len(self._lines) - 1
+
+        # if column is invalid get next closest
+        if self._cursor.x > len(self._lines[cursor.y]):
+            if cursor.y + 1 < len(self._lines):
+                cursor.y += 1
+                cursor.x = 0
+
+            else:
+                cursor.x = len(self._lines[cursor.y]) - 1
+
+        if not self._is_cursor_valid(cursor):
+            max_x: list[int] = [len(line) for line in self._lines]
+            logger.error(f"Generated cursor is not valid: {cursor} | [max_x={max_x}], max_y={len(self._lines)}]")
+
+        return cursor
+
+    def _is_cursor_valid(self, cursor: Cursor = None) -> bool:
         """
         check if cursor is valid
         :return: None
         """
-        if self._cursor.y >= len(self._lines) or self._cursor.y < 0:
+        if cursor is None:
+            cursor = self._cursor
+
+        if cursor.y == 0 and cursor.x == 0:
+            return True
+
+        if cursor.y >= len(self._lines) or cursor.y < 0:
             return False
 
-        line: list[int] = self._lines[self._cursor.y]
-        return len(line) > self._cursor.x > 0
+        line: list[int] = self._lines[cursor.y]
+        return len(line) >= cursor.x >= 0
 
     def _get_line_of_index(self, index: int) -> list[int]:
         return next((line for line in self._lines if index in line), [])
@@ -471,6 +504,11 @@ class _MarkupTextManager(object):
         if not current_line:
             return self._cursor.x, self._cursor.y
 
+        print(self._characters)
+        print(self._lines)
+        print(len(self._characters))
+        print(current_line)
+
         # find max character height in line to adjust y
         max_height: int = max(self._characters[index].height for index in current_line)
         pivot_character: Character = self._characters[
@@ -502,7 +540,12 @@ class _MarkupTextManager(object):
         :param cursor: new cursor
         :return: None
         """
+        logger.debug(f"Setting cursor {cursor}")
         self._cursor.set(cursor)
+
+        if not self._is_cursor_valid() and (self._cursor.x != 0 or self._cursor.y != 0):
+            logger.warning("Given cursor is invalid.")
+            self._set_cursor(self._get_next_valid_cursor())
 
     def _set_cursor_pos(self, x: int, y: int) -> None:
         """
@@ -856,6 +899,8 @@ class _MarkupTextManager(object):
 
             self._rebuild_from_characters()
             self._rebuild_lines()
+
+            self.move_cursor_left()
 
         self.update_deferred()
 
