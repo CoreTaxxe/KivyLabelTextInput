@@ -306,9 +306,10 @@ class _MarkupTextManager(object):
         # if row is invalid get next closest row
         if self._cursor.y >= len(self._lines):
             cursor.y = len(self._lines) - 1
+            cursor.x = len(self._lines[cursor.y])
 
         # if column is invalid get next closest
-        if self._cursor.x > len(self._lines[cursor.y]):
+        elif self._cursor.x > len(self._lines[cursor.y]):
             if cursor.y + 1 < len(self._lines):
                 cursor.y += 1
                 cursor.x = 0
@@ -504,13 +505,8 @@ class _MarkupTextManager(object):
         if not current_line:
             return self._cursor.x, self._cursor.y
 
-        print(self._characters)
-        print(self._lines)
-        print(len(self._characters))
-        print(current_line)
-
         # find max character height in line to adjust y
-        max_height: int = max(self._characters[index].height for index in current_line)
+        max_height = max(self._characters[index].height for index in current_line)
         pivot_character: Character = self._characters[
             current_line[min(max(self._cursor.x - 1, 0), len(current_line) - 1)]
         ]
@@ -864,6 +860,7 @@ class _MarkupTextManager(object):
             if character.index in selected_indices:
                 self._characters.remove(character)
         self._rebuild_from_characters()
+        self._rebuild_lines()
         self._reset_selection()
 
     def _multi_delete(self) -> None:
@@ -872,8 +869,6 @@ class _MarkupTextManager(object):
         :return: None
         """
         self.delete_selected()
-        self._rebuild_from_characters()
-        self._rebuild_lines()
         self._set_cursor(min(self._msc_initial_cursor, self._msc_end_cursor))
 
     def delete(self, left: bool = True) -> None:
