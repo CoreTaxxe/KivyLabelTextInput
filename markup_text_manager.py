@@ -4,10 +4,6 @@ cursor breaks if first lines are new lines
 
 """
 
-xx = 1
-if xx:
-    from loguru import logger
-
 import math
 from copy import copy
 from dataclasses import dataclass, field, asdict, fields, Field
@@ -16,18 +12,12 @@ from functools import lru_cache
 from io import StringIO
 from typing import Callable, Union, Any
 
-import keyboard
 import kivy.input
-from kivy.app import App
 from kivy.clock import mainthread, Clock
 from kivy.core.text import Label as CoreLabel
-from kivy.core.window import Window
-from kivy.graphics import Rectangle, Color
 from kivy.lang import Builder
-from kivy.properties import NumericProperty
-from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.label import Label
-from kivy.uix.relativelayout import RelativeLayout
+from loguru import logger
 
 Builder.load_string("""
 <TextEdit>:
@@ -36,13 +26,13 @@ Builder.load_string("""
             rgb : 0,0,0
         Line:
             rectangle : [0,0, self.width, self.height]
-            
+
         Color:
             rgb: 1,0,0
         Rectangle:
             pos : self.cursor_x, self.cursor_y
             size : 2, self.cursor_height
-        
+
 """)
 
 LB_NEWLINE: str = "\n"
@@ -947,84 +937,93 @@ class _MarkupTextManager(object):
         self.update_deferred()
 
 
-class TextEdit(RelativeLayout):
-    cursor_x = NumericProperty(0)
-    cursor_y = NumericProperty(0)
-    cursor_height = NumericProperty(0)
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        lbl = Label(text="Hello World\n12345678", color=(0, 0, 0))
-        lbl.text_size = (51, None)
-        self._gfx_selection = []
-        self.add_widget(lbl)
-        self._manager: _MarkupTextManager = _MarkupTextManager(lbl, self._cb)
-        self._manager.set_text(lbl.text)
-
-        keyboard.add_hotkey("left arrow", lambda *args: self._manager.move_cursor_left())
-        keyboard.add_hotkey("right arrow", lambda *args: self._manager.move_cursor_right())
-        keyboard.add_hotkey("up arrow", lambda *args: self._manager.move_cursor_up())
-        keyboard.add_hotkey("down arrow", lambda *args: self._manager.move_cursor_down())
-
-        def insert_text(kbe: keyboard.KeyboardEvent):
-            if kbe.name in keyboard.all_modifiers or kbe.name in ["nach-oben", "nach-unten", "nach-rechts",
-                                                                  "nach-links"]:
-                return
-
-            s = kbe.name
-
-            if kbe.name == "enter":
-                s = "\n"
-
-            if kbe.name == "space":
-                s = " "
-
-            if kbe.name == "backspace":
-                self._manager.delete()
-                return
-
-            self._manager.insert(s)
-
-        keyboard.on_release(insert_text)
-
-    @mainthread
-    def _cb(self, pos, size, boxes):
-        self.cursor_x = pos[0]
-        self.cursor_y = pos[1]
-        self.cursor_height = size[1]
-
-        for instruction in self._gfx_selection:
-            self.canvas.remove(instruction)
-        self._gfx_selection.clear()
-
-        for box in boxes:
-            with self.canvas:
-                c = Color(1, 1, 0, 0.5)
-                r = Rectangle(pos=(box[0], box[1]), size=(box[2], box[3]))
-                self._gfx_selection.append(c)
-                self._gfx_selection.append(r)
-
-    def on_touch_down(self, touch):
-        touch.push()
-        touch.apply_transform_2d(self.to_local)
-        self._manager.start_select_by_drag(touch)
-        touch.pop()
-
-    def on_touch_move(self, touch):
-        touch.push()
-        touch.apply_transform_2d(self.to_local)
-        self._manager.update_select_by_drag(touch)
-        touch.pop()
-
-    def on_touch_up(self, touch: kivy.input.MotionEvent):
-        touch.push()
-        touch.apply_transform_2d(self.to_local)
-        self._manager.stop_select_by_drag(touch)
-        touch.pop()
-
-
 if __name__ == "__main__":
+    import keyboard
+    from kivy.app import App
+    from kivy.uix.relativelayout import RelativeLayout
+    from kivy.uix.floatlayout import FloatLayout
+    from kivy.graphics import Rectangle, Color
+    from kivy.properties import NumericProperty
+    from kivy.core.window import Window
+
+
+    class TextEdit(RelativeLayout):
+        cursor_x = NumericProperty(0)
+        cursor_y = NumericProperty(0)
+        cursor_height = NumericProperty(0)
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+
+            lbl = Label(text="Hello World\n12345678", color=(0, 0, 0))
+            lbl.text_size = (51, None)
+            self._gfx_selection = []
+            self.add_widget(lbl)
+            self._manager: _MarkupTextManager = _MarkupTextManager(lbl, self._cb)
+            self._manager.set_text(lbl.text)
+
+            keyboard.add_hotkey("left arrow", lambda *args: self._manager.move_cursor_left())
+            keyboard.add_hotkey("right arrow", lambda *args: self._manager.move_cursor_right())
+            keyboard.add_hotkey("up arrow", lambda *args: self._manager.move_cursor_up())
+            keyboard.add_hotkey("down arrow", lambda *args: self._manager.move_cursor_down())
+
+            def insert_text(kbe: keyboard.KeyboardEvent):
+                if kbe.name in keyboard.all_modifiers or kbe.name in ["nach-oben", "nach-unten", "nach-rechts",
+                                                                      "nach-links"]:
+                    return
+
+                s = kbe.name
+
+                if kbe.name == "enter":
+                    s = "\n"
+
+                if kbe.name == "space":
+                    s = " "
+
+                if kbe.name == "backspace":
+                    self._manager.delete()
+                    return
+
+                self._manager.insert(s)
+
+            keyboard.on_release(insert_text)
+
+        @mainthread
+        def _cb(self, pos, size, boxes):
+            self.cursor_x = pos[0]
+            self.cursor_y = pos[1]
+            self.cursor_height = size[1]
+
+            for instruction in self._gfx_selection:
+                self.canvas.remove(instruction)
+            self._gfx_selection.clear()
+
+            for box in boxes:
+                with self.canvas:
+                    c = Color(1, 1, 0, 0.5)
+                    r = Rectangle(pos=(box[0], box[1]), size=(box[2], box[3]))
+                    self._gfx_selection.append(c)
+                    self._gfx_selection.append(r)
+
+        def on_touch_down(self, touch):
+            touch.push()
+            touch.apply_transform_2d(self.to_local)
+            self._manager.start_select_by_drag(touch)
+            touch.pop()
+
+        def on_touch_move(self, touch):
+            touch.push()
+            touch.apply_transform_2d(self.to_local)
+            self._manager.update_select_by_drag(touch)
+            touch.pop()
+
+        def on_touch_up(self, touch: kivy.input.MotionEvent):
+            touch.push()
+            touch.apply_transform_2d(self.to_local)
+            self._manager.stop_select_by_drag(touch)
+            touch.pop()
+
+
     class Root(FloatLayout):
         def on_kv_post(self, base_widget):
             self.add_widget(TextEdit(size_hint=(0.5, 0.5), pos_hint={'center_x': 0.5, 'center_y': 0.5}))
